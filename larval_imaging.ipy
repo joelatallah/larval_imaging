@@ -1,0 +1,945 @@
+# This program was used in Kalay et al, 2019, "Evolution of segment position in Drosophila larvae". The program was used to measure the anterior and posterior boundaries of 8 abdominal denticle belts and report these as a fraction of the larval length.
+# The program was custom-written for the specific purposes of the Kalay et al, 2019 study. If you would like to use it for your own analysis of larval images, please email jatallah@uno.edu for advice. 
+
+# INPUT: 
+
+# All larval images (in .tif format) in the folder '/Volumes/Promise Pegasus/JOEL/Image_Analysis/Image_files_original' This can be modified on linej **
+
+# OUTPUT:
+
+# A series of files in the folder ''
+# a) A file containing the positions of the anterior and posterior boundaries of each of 8 abdominal denticle belts and the length each larva. These positions are recorded in pixels.
+# b) A file containing the anterior and posterior boundaries of each of the 8 denticle belts as a fraction of the larval length
+# c) Rotated, cropped images of the larvae, with the anterior to the left and the posterior to the right, with vertical lines showing the denticle belt boundaries
+# d) A log file that keeps track of which images were processed
+
+# To accomplish these tasks, the program a) rotates the images so that the larvae are positioned horizontally, then b) calculates (i) the anterior and posterior end of each larva and (ii) the denticle belt anterior and posterior boundaries. The program inserts vertical lines on these images to mark the positions of these boundaries.
+
+# The program is designed to be used across species and conditions. It will work better in some cases than others, and the purpose of outputing the cropped images with the denticle belt boundaries identified is to enable users to compare the program's calls to their own. Species, as well as individual images, differ
+# There are numerous parameters that can be altered in an attempt to improve accuracy. The parameter values reported here are those that were used in Kalay et al., 2019
+
+
+#NEED TO DEFINE ALL OF THE PARAMETERS AND VARIABLES. LET'S LIST THEM HERE:
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#
+#Imports
+
+%pylab
+import os
+import matplotlib.pyplot as plt
+from scipy import ndimage
+from scipy.misc import imsave
+import numpy
+import string
+
+from os import listdir
+from os.path import isfile, join
+
+from collections import Counter
+
+
+def mode_slices_module (orientation, length_x, length_y): #This function is used twide in the initial (rough) attempt to determine if the belt is more horizontal or vertical	
+	aver_y = [0 for i in xrange(length_x)]	
+	for i in range(length_x):	
+		sum = 0
+		for j in range(length_y):
+			if orientation == 0:
+				sum += slice[i][j]
+			else:
+				sum += slice[j][i]				
+		aver_y[i] = round((sum/float(length_y))*4)
+	data = Counter(aver_y)
+	mode_aver_set = data.most_common(4)
+	mode_aver = (mode_aver_set[0][0] + mode_aver_set[1][0] + mode_aver_set[2][0] + mode_aver_set[3][0])/4
+	return mode_aver
+
+	
+
+	
+# The purpose of the following function is to stop searches from going outside the range of the image
+def following_pixel_check (next_pixel_x, next_pixel_y, dim_x, dim_y):
+	if (next_pixel_x + 2) < dim_x:
+		if next_pixel_x > 1:
+			following_pixel_x = next_pixel_x
+		else:
+			following_pixel_x = 1
+	else:
+		following_pixel_x = dim_x - 2
+	if (next_pixel_y + 2) < dim_y:
+		if next_pixel_y > 1:
+			following_pixel_y = next_pixel_y
+		else:
+			following_pixel_y = 1
+	else:
+		following_pixel_y = dim_y - 2	
+	return(following_pixel_x, following_pixel_y)
+
+#A powerful recursive function, used in determining the anterior and posterior ends of the larvae	
+def search_space (next_pixel_x, next_pixel_y, pixel_number):	
+	
+	for x in range((next_pixel_x-1),(next_pixel_x+2)):
+		for y in range((next_pixel_y-1),(next_pixel_y+2)):
+			if pixel_number < object_size_limit:
+				if pixel_classification[x][y] < 1: 
+					if (slice[x][y] > (background * background_threshold)) and (slice[x][y] < max_intensity):					
+						pixel_classification[x][y] = object_number
+						pixel_number += 1
+						x_next, y_next = following_pixel_check(x, y, downsize_x, downsize_y)
+						search_space(x_next, y_next, pixel_number)
+
+def mode_function (img, i1, i2, j1, j2): #APPARENTLY, THIS FUNCTION IS NEVER USED. BUT PERHAPS IT SHOULD BE SO DON'T DELETE IT YET
+	pixels = []
+	for i in range(i1, i2):
+		for j in range(j1, j2):
+			pixels.append(img[i,j])
+	data = Counter(pixels)
+	mode = data.most_common(4)
+	mode_aver = (mode[0][0] + mode[1][0] + mode[2][0]) / float(3)
+	return mode_aver
+
+#Calculates the maximum intensity within a 2D (rectangular) array of pixels from an image. Used once during the final crop of the image.
+def maximum_intensity(img, x_1, x_2, y_1, y_2):	
+												
+	dim = img.shape
+	
+	top_average = 0
+	for j in range(x_1, x_2):
+		sum_line = 0
+		average_line = 0
+		for i in range(y_1, y_2):
+			sum_line += img[i][j]
+		average_line = sum_line / float(y_2 - y_1)
+		if average_line > top_average:
+			top_average = average_line
+			
+	return top_average
+
+#Calculates the average intensity across a 2D (rectangular) array of pixels. Used twice. 
+def average_intensity(img, x_1, x_2, y_1, y_2): 
+
+	sum = 0
+	dim = img.shape
+
+	horiz = y_2 - y_1
+	vertical = x_2 - x_1
+	area = horiz * vertical
+	for i in range(y_1, y_2):
+		for j in range(x_1, x_2):
+			sum += img[i][j]
+			
+	average = sum/float(area)
+	return average
+	
+#Determines the coordinates of the top or bottom of a denticle belt. The function inputs include the "threshold" as an intensity value 
+def find_denticle_top_or_bottom (img, threshold, i1, i2, j1, j2, direction):
+
+	possible_edge = []
+	edge = 0
+	counter = 0
+	within_belt = False
+
+	for i in range(i1, i2, direction):
+		above_threshold = 0
+		above_threshold_1 = 0
+		above_threshold_2 = 0
+		last_j = 0
+		block_number = 0
+		for j in range (j1, j2):
+			if img[i,j] > threshold:
+				if (j - last_j) > ((j2 - j1) * 0.2):
+					if block_number == 0:
+						block_number = 1
+					else:
+						block_number = 0
+				if block_number == 0:
+					above_threshold_1 += 1
+				else:
+					above_threshold_2 += 1
+			
+				last_j = j
+		
+		above_threshold = above_threshold_1 + above_threshold_2
+		
+		if (above_threshold > 45) and (above_threshold_1 > 15) and (above_threshold_2 > 15):	#ABSOLUTE NUMBERS
+			within_belt = True
+			possible_edge.append(i)
+			if counter > 190:	#ABSOLUTE NUMBERS
+				edge = possible_edge[0]
+				break
+			counter +=1
+		else:
+			if within_belt == True:
+				if abs(i - possible_edge[0]) > 200:	#ABSOLUTE NUMBERS
+
+					counter -= 1
+					possible_edge.pop(0)
+					if possible_edge == []:
+						within_belt = False
+						counter = 0
+	
+	return edge
+
+#Determines the coordinates of the anterior or posterior boundary of the larva	
+def find_larva_end(i_1, i_2, j_1, j_2, direction, horiz_test, background, larva_end_threshold, img):
+
+	last_i = 0
+	last_j = 0
+	
+	end_x = 0
+	end_y = 0
+	
+	for j in range(j_1, j_2, direction):
+		if end_x == 0:
+			for i in range(i_1, i_2):
+				if (img[i,j] > larva_end_threshold) and (abs(i-last_i) > 5):
+					last_i = i
+					last_j = j		
+
+					if ((img[i,j + (20 * direction)] + img[i,j + (30 * direction)] + img[i,j + (40 * direction)])/float(3) > 200) or ((img[i+20,j] + img[i+25,j] + img[i+30,j])/float(3) > 200) or ((img[i-20,j] + img[i-25,j] + img[i-30,j])/float(3) > 200):
+						continue	#ABSOLUTE NUMBERS
+				
+					paired = 0					
+					for u in range (-350, 400, 50):	#ABSOLUTE NUMBERS
+						for v in range (25, 125, 25): #ABSOLUTE NUMBERS
+							if abs(u) > 100: #ABSOLUTE NUMBERS
+								if img[i + u, j + (v * direction)] > larva_end_threshold:
+									paired = 1
+					if paired == 0:
+						continue
+													
+					close_to_background = 0
+					close_to_max = 0
+					for r in range(i+30, i+40): #ABSOLUTE NUMBERS
+						for s in range(j, j + (horiz_test * direction), direction):
+							
+							if img[r,s] < (background + 10):
+								close_to_background += 1
+							if img[r,s] > 200: #ABSOLUTE NUMBERS
+								close_to_max += 1
+							
+					if (close_to_background > (horiz_test * 2)) or (close_to_max > (horiz_test * 2)):
+						close_to_background = 0
+						close_to_max = 0
+						for r in range(i-30, i-40, -1): #ABSOLUTE NUMBERS
+							for s in range(j, j + (horiz_test * direction), direction):
+							
+								if img[r,s] < (background + 10):
+									close_to_background += 1
+								if img[r,s] > 200: #ABSOLUTE NUMBERS
+									close_to_max += 1
+								
+						if (close_to_background > (horiz_test * 2)) or (close_to_max >  (horiz_test * 2)):
+							continue
+
+					
+					end_x = j	
+					end_y = i
+					break
+					
+					
+	return (end_x, end_y)
+	
+os.chdir('/Volumes/Promise Pegasus/JOEL/Image_Analysis/Image_files_results')
+
+# Log file that keeps track of which images were processed
+image_log = open('image_log', 'w')
+
+# File containing the anterior and posterior boundaries of each of 8 denticle belts and the length each larva
+denticle_file = open('Denticle_belt_positions', 'w')
+
+# File containing the anterior and posterior boundaries of each of the 8 denticle belts as a fraction of the larval length
+denticle_file_percentages = open('Denticle_belt_positions_as_percentages', 'w')
+
+# File containing only the anterior denticle belt boundaries of each of the 8 denticle belts (as a fraction of the larval length)
+
+denticle_file_start = open('Denticle_belt_positions_start', 'w')
+
+# File containing only the posterior denticle belt boundaries of each of the 8 denticle belts (as a fraction of the larval length)
+denticle_file_end = open('Denticle_belt_positions_end', 'w')
+
+#Creates a list of all files in the "Image_files_original" directory	
+img_file_list = [ f for f in listdir('/Volumes/Promise Pegasus/JOEL/Image_Analysis/Image_files_original') if isfile(join('/Volumes/Promise Pegasus/JOEL/Image_Analysis/Image_files_original',f)) ]
+
+file_number = 0
+last_species_name = ''
+
+downsize_factor = 32
+background_threshold = 2.2
+end_threshold = 2.5
+max_intensity = 10000
+
+#Note that if the object is larger (in pixels) than the following value (200) it will be  broken up into multiple objects - the limi
+
+
+#Starts the main loop. Processes all files in the "Image_files_original" directory
+
+for image in range(len(img_file_list)):
+
+	img_file = img_file_list[image]
+	if img_file == '.DS_Store':	#These are useless files created by the Mac operating system that should be ignored
+		continue	
+	image_log.write(str(img_file) + '\n')
+	print img_file	#Prints the name of the file being processed to the console
+	species_name = img_file[0:4]	#First 4 characters in the image filename should denote the species (e.g. Dmel)
+	os.chdir('/Volumes/Promise Pegasus/JOEL/Image_Analysis/Image_files_original')	
+	img_original = plt.imread(img_file)	#The original image prior to rotation
+	dim_original = img_original.shape	#Dimesions of the image
+
+# WE NOW HAVE ABOUT 200 LINES OF CODE DEDICATED TO A) REDUCING THE SIZE OF THE IMAGE AND B) ROTATING IT.
+# IF THIS STEP FAILS, THE REST OF THE PROGRAM WILL FAIL.
+
+#The first task is to rotate the image 
+
+#Strategy for rotating the image:
+
+#1) Reduce the size (number of pixels) by the square of the downsize_factor
+#2) Search the reduced image for straight lines. Use these to determine the orientation
+
+	img = np.zeros((dim_original[0], dim_original[1]))
+	for i in range(dim_original[0]):
+		for j in range(dim_original[1]):
+			img[i,j] = img_original[i,j,0]
+	
+	dim = img.shape
+	downsize_x = int(dim[0]/downsize_factor)-1
+	downsize_y = int(dim[1]/downsize_factor)-1
+	horiz_vert = 0
+
+	#Reduces the size of the image. This will make it easier to determine its orientation before rotating it.				
+
+	slice = [[0 for i in xrange(int(dim[1]/downsize_factor)-1)] for i in xrange(int(dim[0]/downsize_factor)-1)] #Initialization
+
+	for k in range(int(dim[0]/downsize_factor)-1):
+		for j in range(int(dim[1]/downsize_factor)-1):
+			sum_of_intensities = 0
+			for i in range (k*downsize_factor, (k+1)*downsize_factor):
+				for h in range (j*downsize_factor, (j+1)*downsize_factor):
+					sum_of_intensities = sum_of_intensities + img[i,h]
+			mean_intensity = float(sum_of_intensities) / (downsize_factor**2)
+			slice[k][j] = round(mean_intensity,0)
+	
+	#A rough attempt to determine whether the orientation is horizontal or vertical: 1 = horizontal, 2 = vertical, 0 = unclear at this stage
+	
+	mode_x = mode_slices_module(0, downsize_x, downsize_y)
+	mode_y = mode_slices_module(1, downsize_y, downsize_x)
+	if (mode_x - mode_y) > (mode_y * 0.25):
+		horiz_vert = 1
+	elif (mode_y - mode_x) > (mode_x * 0.25):
+		horiz_vert = 2	
+	
+	#Calculates the mode (most common value) of the intensity to use as background. This is based on the assumption that the majority of the image is composed of background. Since some of the images have a "glare", this is important. 
+	
+	slices = []	#Not to be confused with the "slice" array
+	for i in range (0, downsize_x):
+		slices = slices + slice[i][0:downsize_y]
+	data = Counter(slices)
+	mode_slices  = data.most_common(1)
+	background_sequence = mode_slices[0]
+	background = background_sequence[0]
+	
+	#Sets a minimum background of 15 
+	
+	if background < 15: 
+		background = 15
+	
+	#This segment classifies each pixel within a specific intensity range as belonging to a numbered object
+	
+	#Max intensity is set at 10,000, which is equivalent to infinity because the intensity will not be greater than 255
+
+	pixel_classification = [[0 for i in xrange(downsize_y)] for i in xrange(downsize_x)]
+	object_number = 0
+	object_size = []
+	
+	for i in range(downsize_x): 
+		for j in range(downsize_y):
+			if pixel_classification[i][j] < 1: 
+				if (slice[i][j] > (background * background_threshold)) and (slice[i][j] < max_intensity): #SET background * background_threshold AS MIN_INTENSITY
+					object_number += 1
+					pixel_number = 0
+					pixel_classification[i][j] = object_number
+					pixel_number +=1
+					next_pixel_x, next_pixel_y = following_pixel_check(i, j, downsize_x, downsize_y)
+					search_space(next_pixel_x, next_pixel_y, pixel_number)
+					object_size.append(pixel_number)
+
+	object_number += 1
+	
+	#Print reduced classification scheme
+	
+
+	#This segment looks for horizontal denticle belts
+	
+	start_x = [0 for i in xrange(object_number)]
+	start_y = [0 for i in xrange(object_number)]
+	end_x = [10000 for i in xrange(object_number)]
+	end_y = [10000 for i in xrange(object_number)]
+	
+	
+	for i in range(downsize_x): 
+		for j in range(downsize_y):
+			if pixel_classification[i][j] > 1:
+				if (j > start_y[pixel_classification[i][j]]) and (slice[i][j] > (background * end_threshold)):					
+					start_y[pixel_classification[i][j]] = j
+					start_x[pixel_classification[i][j]] = i
+				elif (i < start_x[pixel_classification[i][j]]) and (slice[i][j] > (background * end_threshold)):
+					start_x[pixel_classification[i][j]] = i
+				if (j < end_y[pixel_classification[i][j]]) and (slice[i][j] > (background * end_threshold)):
+					end_y[pixel_classification[i][j]] = j
+					end_x[pixel_classification[i][j]] = i
+				elif (i < end_x[pixel_classification[i][j]]) and (slice[i][j] > (background * end_threshold)):
+					end_x[pixel_classification[i][j]] = i
+	
+	tan_angle = []
+	tan_angle_div_20 = []
+	tan_number = 0 #tan_number is the number of objects within a certain size range which could be denticle belts. 
+	
+	
+	
+	for i in range(object_number-1):
+		length = ((end_x[i] - start_x[i])**2 + (end_y[i] - start_y[i])**2)**0.5
+		if ((length > 10) and (length < 60)):
+			tan_number += 1
+			if ((end_x[i] - start_x[i]) == 0) or ((end_y[i] - start_y[i]) == 0):
+				tan_angle.append(0)
+			else:
+				tan_angle.append(round(float(end_x[i] - start_x[i])/(end_y[i] - start_y[i]),2))
+
+	tan_number_horiz = tan_number #tan_number_horiz = the number of potential denticle belts that would be identified if the image were horizontal 
+
+	#This segment looks for verticle denticle belts
+	
+	start_x = [0 for i in xrange(object_number)]
+	start_y = [0 for i in xrange(object_number)]
+	end_x = [10000 for i in xrange(object_number)]
+	end_y = [10000 for i in xrange(object_number)]
+	for i in range(downsize_x):
+		for j in range(downsize_y):
+			if pixel_classification[i][j] > 1:
+				if (i > start_x[pixel_classification[i][j]]) and (slice[i][j] > (background * end_threshold)):					
+					start_y[pixel_classification[i][j]] = j
+					start_x[pixel_classification[i][j]] = i
+				elif (i == start_x[pixel_classification[i][j]]) and (j < start_y[pixel_classification[i][j]]) and (slice[i][j] > (background * end_threshold)):
+					start_y[pixel_classification[i][j]] = j
+				if (i < end_x[pixel_classification[i][j]]) and (slice[i][j] > (background * end_threshold)):
+					end_y[pixel_classification[i][j]] = j
+					end_x[pixel_classification[i][j]] = i
+				elif (i == end_x[pixel_classification[i][j]]) and (j < end_y[pixel_classification[i][j]]) and (slice[i][j] > (background * end_threshold)):
+					end_y[pixel_classification[i][j]] = j	
+		
+	
+	for i in range(object_number-1):
+		length = ((end_x[i] - start_x[i])**2 + (end_y[i] - start_y[i])**2)**0.5
+		if ((length > 10) and (length < 60)):
+			tan_number += 1
+			if ((end_x[i] - start_x[i]) == 0) or ((end_y[i] - start_y[i]) == 0):
+				tan_angle.append(0)
+			else:
+				tan_angle.append(round(float(end_y[i] - start_y[i])/(end_x[i] - start_x[i]),2))
+
+	if tan_number == 0:
+		image_log.write('Failed to identify denticle belts for rotation' + '\n')
+		continue
+
+	tan_index = 0
+	
+	sum_tan = [[0 for i in xrange(tan_number)] for i in xrange(2)]
+	
+	for i in range(tan_number):		
+
+		if i < tan_number_horiz: 
+		
+			if (horiz_vert == 0) or (horiz_vert == 1):
+				for j in range(tan_number_horiz):
+					if abs(tan_angle[j] - tan_angle[i]) < 0.1:
+						sum_tan[0][i] += 1
+						sum_tan[1][i] += tan_angle[j]
+		else:
+			if (horiz_vert == 0) or (horiz_vert == 2):
+				for j in range(tan_number_horiz, tan_number):
+					if abs(tan_angle[j] - tan_angle[i]) < 0.1:
+						sum_tan[0][i] += 1
+						sum_tan[1][i] += tan_angle[j]		
+
+	tan_index = argmax(sum_tan[0][:tan_number])
+	if sum_tan[0][tan_index] < 4:	#If the program failed to identify four denticle belts, it is classified in the log file as a rotation error		
+		image_log.write('Failed to rotate' + '\n') 
+	
+	if tan_index < tan_number_horiz:
+		horiz_vert = 1
+	else:
+		horiz_vert = 2
+	
+	tan_angle_average = round(sum_tan[1][tan_index]/float(sum_tan[0][tan_index]),2)
+
+	
+	rotation_angle_in_radians = math.atan(tan_angle_average)
+	rotation_angle_in_degrees = math.degrees(rotation_angle_in_radians)
+
+	
+	if horiz_vert == 2:
+		rotation_angle_in_degrees = 90-rotation_angle_in_degrees
+	
+	rotation_angle_in_degrees += 90
+	
+	rotated_img = ndimage.rotate(img, rotation_angle_in_degrees)
+	
+		
+	# After rotating the image so that the horizontal axis is equivalent to the anteroposterior axis, the program crops the image so that only the denticle belts are retained. There are algorithms that accomplish this. The first algorithm, below, may be referred to as "initial crop"
+	
+	# This algorithm searches the image, first from the left, then from the right, for the head and tail. The assumption is that the head and tail will be brighter than a specific  larva_end_threshold and accompanied by an increase in average pixel intensity over a specific area.
+
+	dim_rot = rotated_img.shape
+	
+	larva_end_threshold = 100
+		
+	j_range_left_1 = 0
+	j_range_left_2 = int(dim_rot[1] * 0.75)
+
+	(left_x, left_y) = find_larva_end(int(dim_rot[0] * 0.45), int(dim_rot[0] * 0.55), j_range_left_1, j_range_left_2, 1, int(dim_rot[1] * 0.04), background, larva_end_threshold, rotated_img)
+	
+	
+	if (left_x == 0):
+		image_log.write('Could not find left end for ' + img_file) 
+		continue
+
+	j_range_right_1 = dim_rot[1] - 1
+	j_range_right_2 = int(dim_rot[1] * 0.25)
+	
+	(right_x, right_y) = find_larva_end(int(dim_rot[0] * 0.45), int(dim_rot[0] * 0.55), j_range_right_1, j_range_right_2, -1, int(dim_rot[1] * 0.04), background, larva_end_threshold, rotated_img)	
+
+	if (right_x == 0):
+		image_log.write('Could not find right end for ' + img_file) 	
+		continue	
+	
+	rotation_adjustment_tan = (right_y-left_y)/float(right_x-left_x)
+
+	rotation_adjustment_in_radians = math.atan(rotation_adjustment_tan)
+	rotation_adjustment_in_degrees = math.degrees(rotation_adjustment_in_radians)
+
+	rotated_img_adjusted = ndimage.rotate(rotated_img, rotation_adjustment_in_degrees)
+	dim_rot_adj = rotated_img_adjusted.shape
+	
+	
+	#os.chdir('/Volumes/Promise Pegasus/JOEL/Image_Analysis/Image_files_rotated_adjusted')
+	#imsave(img_file, rotated_img_adjusted)	
+
+	j_range_left_1 = 0
+	j_range_left_2 = int(dim_rot_adj[1] * 0.75)
+
+	(left_x_new, left_y_new) = find_larva_end(int(dim_rot_adj[0] * 0.45), int(dim_rot_adj[0] * 0.55), j_range_left_1, j_range_left_2, 1, int(dim_rot_adj[1] * 0.04), background, larva_end_threshold, rotated_img_adjusted)
+	
+	j_range_right_1 = dim_rot[1] - 1
+	j_range_right_2 = int(dim_rot_adj[1] * 0.25)
+	
+	(right_x_new, right_y_new) = find_larva_end(int(dim_rot_adj[0] * 0.45), int(dim_rot_adj[0] * 0.55), j_range_right_1, j_range_right_2, -1, int(dim_rot_adj[1] * 0.04), background, larva_end_threshold, rotated_img_adjusted)	
+
+	# Initial crop
+	
+	top = int((left_y_new + right_y_new) * 0.5 - (abs(right_x_new - left_x_new) * 0.15))
+	bottom = int((left_y_new + right_y_new) * 0.5 + (abs(right_x_new - left_x_new) * 0.15))
+	
+	if (left_x_new == 0) or (left_y_new) == 0 or (right_x_new == 0) or (right_y_new == 0):
+		image_log.write('ERROR' + '\n')
+		continue
+	
+	crop_img = rotated_img_adjusted[top:bottom, left_x_new:right_x_new]
+	
+	#os.chdir('/Volumes/Promise Pegasus/JOEL/Image_Analysis/Image_files_crop')
+	#imsave(img_file, crop_img)
+	#imsave(img_file, crop_img)
+
+
+	img = crop_img
+	dim = img.shape
+
+	#Orients the image so the anterior is to the left
+	
+	right = 0
+	left = 0
+	
+	for i in range(int(dim[0] * 0.3), int(dim[0] * 0.7)):
+		for j in range (int(dim[1] * 0.15), int(dim[1] * 0.5)):
+			if img[i,j] > 50:
+				left += 1
+
+			
+	for i in range(int(dim[0] * 0.3), int(dim[0] * 0.7)):
+		for j in range (int(dim[1] * 0.5), int(dim[1] * 0.85)):
+			if img[i,j] > 50:
+				right += 1
+	
+	if left < right:
+		
+		img_reoriented = img
+			
+	else:
+		
+		#print "flip"
+		img_reoriented = np.fliplr(img)
+		
+	#os.chdir('c://Users//Joel/Image_files_reoriented')
+	#imsave(img_file, img_reoriented)
+
+	#This algorithm performs the "final crop"
+	
+	img = img_reoriented
+	dim = img.shape
+	
+	y_1 = int(dim[0] * 0.2)
+	y_2 = int(dim[0] * 0.8)
+	x_1 = int(dim[1] * 0.45)
+	x_2 = int(dim[1] * 0.55)	
+	maximum = maximum_intensity(img, x_1, x_2, y_1, y_2)
+
+	y_1 = int(dim[0] * 0.2)
+	y_2 = int(dim[0] * 0.8)
+	x_1 = int(dim[1] * 0.4)
+	x_2 = int(dim[1] * 0.6)
+	average = average_intensity(img, x_1, x_2, y_1, y_2)
+	top = 0
+	bottom = 0
+
+	threshold = ((maximum + (average * 1.8)) / float(2)) * 0.9
+	
+	top = find_denticle_top_or_bottom (img, threshold, 0, int(dim[0]), int(dim[1] * 0.42), int(dim[1] * 0.58), 1)
+	bottom = find_denticle_top_or_bottom (img, threshold, int(dim[0]) - 1, 0, int(dim[1] * 0.42), int(dim[1] * 0.58), -1)
+	
+	if bottom == 0:
+		bottom = dim[0]
+		image_log.write('no bottom' + '\n')
+		#continue
+	if top == 0:
+		image_log.write('no top' + '\n')
+		#continue	
+		
+	if top > bottom:
+		image_log.write('top > bottom - not saved' + '\n')
+		continue
+	
+	top -= int(dim[0] * 0.1)
+	bottom += int(dim[0] * 0.1)
+	
+	if (top < 1) or (bottom > dim[0]):
+		image_log.write('out of range - chose edge for final crop' + '\n')
+		top = 0
+		bottom = dim[0]
+	
+	img_rot = img[top:bottom, 0:dim[1]]
+	
+	#os.chdir('c://Users//Joel/Image_files_after_final_crop')
+	#imsave(img_file, img_rot)
+
+	#Now that the image has been appropriately positioned with the anteroposterior axis parallel to the x axis (with the anterior to the left) and cropped in the y-axis so that only the denticle belts are visible, the positions of the denticle belts can be determined 
+	
+	dim_rot = img_rot.shape
+
+	#Generate 61 slices along the x axis:
+
+	
+	slice = [[0 for i in xrange(dim_rot[1])] for i in xrange(61)] #The "slice" array should not be mistaken for the "slices" array (used above)
+	
+	
+	# If the image is too narrow, it will not be possible to extract meaningful slices
+	if dim_rot[0] < 400:	#Absolute value
+		image_log.write('Cropped image too narrow in the y axis - Error' + '\n')
+		continue
+	
+	#Generates 61 horizontal slices
+	
+	for k in range(61):
+		sliver = int(dim_rot[0] * (0.35+(0.005*k)))
+		slice_top = int(sliver) - int(round(dim_rot[0] / float(400),0))
+		slice_bottom = int(sliver) + int(round(dim_rot[0] / float(400),0))
+		for j in range(dim_rot[1]):
+			sum_of_intensities = 0
+			for i in range (slice_top, slice_bottom):
+				sum_of_intensities = sum_of_intensities + img_rot[i,j]
+			mean_intensity = sum_of_intensities / float(slice_bottom - slice_top)
+			slice[k][j] = round(mean_intensity,0)
+
+	# set larva_start - it is assumed that no abdominal denticle belt will be found less than 26% (0.26) of the distance from the anterior to the posterior tips of the larvae. This assumption saves computing power. The validity of the assumption can be verified by viewing the output images with the denticle belts marked.
+
+	larva_start = int(dim_rot[1] * 0.26)
+
+	# set larva_end for purposes of calculating background
+
+	larva_end = int(dim_rot[1] * 0.89)
+	
+	#1) Calculate the background for each region, after dividing up the image into 8 regions (0-7)
+
+	average_slices_list = [0 for i in xrange(8)]
+	mode_slices_list = [0 for i in xrange(8)]
+
+	for i in range (8):
+		slices = []
+		
+		x_1 = int(larva_start + ((larva_end - larva_start)/float(8))*i)
+		x_2 = int(larva_start + ((larva_end - larva_start)/float(8))*(i+1))
+		y_1 = int(dim_rot[0] * 0.35)
+		y_2 = int(dim_rot[0] * 0.65)
+		
+		average_slices_list[i] = average_intensity(img_rot, x_1, x_2, y_1, y_2)
+		
+		mode_slices_list[i] = int(average_slices_list[i] * 0.8)
+
+		image_log.write('background threshold' + '\t' + str(mode_slices_list[i]) + '\n')	
+		
+# Set the parameters for the 1st denticle belt. These parameters will be different from the other denticle belts due to the unique characteristics of this belt.
+
+	below_threshold = 0
+
+	peak_slice_start = 0
+	peak_slice_end = 61
+	below_peak_allowance = 35
+	edge_above_threshold_allowance = 15
+	peak_threshold = 2
+	edge_threshold = 2
+	oscillation_limit_anter = 1
+	oscillation_limit_poster = 2
+	oscillation_edge_threshold = 1.8
+	oscillation_threshold = 0.3
+	min_peak_length_fraction = 0.0006
+	min_flanking_length_fraction = 0.01
+
+	mode_slices = mode_slices_list[0] #THIS IS A CALCULATED, NOT A USER-DEFINED PARAMETER - MOVE IT TO EARLIER?
+
+	pixels_below_threshold = 0
+
+	denticle = -1 #The first dencticle belt will be number 0 (-1 + 1)
+
+	in_denticle = 0
+
+	peak = 0
+
+	denticle_start = []
+	denticle_end = []
+
+	edge_above_threshold = 0
+
+	for i in range(larva_start, int(dim_rot[1])):	
+		if in_denticle == 0:
+			below_peak = 0
+			for j in range (peak_slice_start, peak_slice_end):
+				if slice[j][i] < (mode_slices * peak_threshold):
+					below_peak += 1
+					if below_peak > below_peak_allowance:
+						peak = 0
+						break
+			else:
+				peak += 1
+			if peak >= (int(int(dim_rot[1]) * min_peak_length_fraction)):	
+				denticle += 1
+				in_denticle = 1
+				possible_start = 0
+				pixels_below_threshold = 0
+				for k in range(i-1, larva_start, -1):
+					edge_above_threshold = 0
+					oscillation = 0
+					position_of_spike = 0
+					for m in range(0,61):
+						if slice[m][k] > (mode_slices * oscillation_edge_threshold):
+							if slice[m][k] > (mode_slices * edge_threshold):
+								edge_above_threshold += 1
+							if position_of_spike > 0:
+								if ((m - position_of_spike) > 1) and ((m - position_of_spike) < 20):
+									temp = slice[position_of_spike+1][k]
+									for r in range (position_of_spike+2, m):
+										if slice[r][k] < temp:
+											temp = slice[r][k]
+									if ((slice[m][k] - temp)/float(slice[m][k])) > oscillation_threshold:
+										oscillation += 1
+							position_of_spike = m
+							if (edge_above_threshold > edge_above_threshold_allowance) or (oscillation > oscillation_limit_anter):
+								possible_start = 0
+								pixels_below_threshold = 0
+								below_threshold = 0
+								break
+					else:
+						if below_threshold == 0:
+							possible_start = k + 1
+							pixels_below_threshold += 1
+							below_threshold = 1
+						else:
+							pixels_below_threshold += 1
+							if pixels_below_threshold > int(dim_rot[1] * min_flanking_length_fraction):
+								denticle_start.append(possible_start)
+								possible_start = 0
+								pixels_below_threshold = 0
+								break
+		else:
+			edge_above_threshold = 0
+			oscillation = 0
+			position_of_spike = 0
+			for n in range(0,61):
+				if slice[n][i] > (mode_slices * oscillation_edge_threshold):
+					if slice[n][i] > (mode_slices * edge_threshold):
+						edge_above_threshold += 1
+					if position_of_spike > 0:
+						if ((n - position_of_spike) > 1) and ((n - position_of_spike) < 20):
+							temp = slice[position_of_spike+1][i]
+							for r in range (position_of_spike+2, n):
+								if slice[r][i] < temp:
+									temp = slice[r][i]
+							if ((slice[n][i] - temp)/float(slice[n][i])) > oscillation_threshold:
+								oscillation += 1
+					position_of_spike = n
+					if (edge_above_threshold > edge_above_threshold_allowance) or (oscillation > oscillation_limit_poster):
+						possible_end = 0
+						pixels_below_threshold = 0
+						below_threshold = 0
+						break
+			else:
+				if below_threshold == 0:
+					possible_end = i - 1
+					pixels_below_threshold += 1
+					below_threshold = 1
+				else:
+					pixels_below_threshold += 1
+					#print i, "\t", pixels_below_threshold, "\n"
+					if pixels_below_threshold > int(dim_rot[1] * min_flanking_length_fraction):
+						denticle_end.append(possible_end)
+						possible_end = 0
+						pixels_below_threshold = 0
+						in_denticle = 0
+						if denticle == 7:
+							break
+						if denticle == 6:
+							peak_slice_start = 0
+							peak_slice_end = 61
+							below_peak_allowance = 53
+							edge_above_threshold_allowance = 6
+							peak_threshold = 3.3
+							edge_threshold = 3.3
+							oscillation_edge_threshold = 2
+							#oscillation_threshold = 0.5
+							oscillation_limit_anter = 2
+							oscillation_limit_poster = 1
+							min_peak_length_fraction = 0.0005
+							min_flanking_length_fraction = 0.015
+						mode_slices = mode_slices_list[denticle+1]
+						if denticle == 0:
+							peak_slice_start = 0
+							peak_slice_end = 61
+							below_peak_allowance = 35
+							edge_above_threshold_allowance = 11
+							peak_threshold = 2
+							edge_threshold = 1.5
+							oscillation_limit_anter = 2
+							oscillation_limit_poster = 2
+							oscillation_edge_threshold = 1.3
+							oscillation_threshold = 0.2
+							min_peak_length_fraction = 0.001
+							min_flanking_length_fraction = 0.015	
+						if denticle == 1:
+							peak_slice_start = 0
+							peak_slice_end = 61
+							below_peak_allowance = 35
+							edge_above_threshold_allowance = 12
+							peak_threshold = 2
+							edge_threshold = 2
+							oscillation_limit_anter = 2
+							oscillation_limit_poster = 2
+							oscillation_edge_threshold = 1.5
+							oscillation_threshold = 0.2
+							min_peak_length_fraction = 0.002
+							min_flanking_length_fraction = 0.015								
+						if denticle in range(2,6):
+							peak_slice_start = 0
+							peak_slice_end = 61
+							below_peak_allowance = 35
+							edge_above_threshold_allowance = 15
+							peak_threshold = 2
+							edge_threshold = 2
+							oscillation_limit_anter = 2
+							oscillation_limit_poster = 2
+							oscillation_edge_threshold = 1.7
+							oscillation_threshold = 0.2
+							min_peak_length_fraction = 0.002
+							min_flanking_length_fraction = 0.015
+
+
+	# Creates an image file with vertical lines marking the start and end of each denticle belt
+
+	#os.chdir('c://Users//Joel/Image_files_results')
+	for denticle_line in range(len(denticle_start)):
+		for i in range(dim_rot[0]):
+			img_rot[i,denticle_start[denticle_line]] = 255
+	
+	for denticle_line in range(len(denticle_end)):
+		for i in range(dim_rot[0]):
+			img_rot[i,denticle_end[denticle_line]] = 255	
+
+	os.chdir('/Volumes/Promise Pegasus/JOEL/Image_Analysis/Image_files_results')
+	imsave(img_file, img_rot)
+						
+	# Prints the results, consisting of the anterior (start) and posterior (end) boundary of each denticle belt, (counted in pixels from the anterior limit of the larva) to a file
+	# THERE'S REPETITION HERE
+	
+	denticle_file.write(str(img_file) + '\n')
+
+	for i in range(len(denticle_start)):
+		denticle_file.write(str(denticle_start[i]) + '\t')
+	denticle_file.write('\t')
+	denticle_file.write(str(dim_rot[1]))
+	denticle_file.write('\n')
+	for i in range(len(denticle_end)):
+		denticle_file.write(str(denticle_end[i]) + '\t')
+	denticle_file.write('\t')
+	denticle_file.write(str(dim_rot[1]))
+	denticle_file.write('\n\n')
+	
+	# Prints the position of each denticle belt, as a fraction of larval length to a file
+
+	denticle_file_percentages.write(str(img_file) + '\n')
+
+	for i in range(len(denticle_start)):
+		denticle_file_percentages.write(str(round(denticle_start[i]*100/float(dim_rot[1]),2)) + '\t')
+	denticle_file_percentages.write('\n')
+	for i in range(len(denticle_end)):
+		denticle_file_percentages.write(str(round(denticle_end[i]*100/float(dim_rot[1]),2)) + '\t')
+	denticle_file_percentages.write('\n\n')
+	
+# Creates a file consisting only the anterior limit of each denticle belt, as a fraction of larval length. This "start" file does not contain the image filenames but matches the corresponding "end" file (see below) line for line. 
+	
+	if not(species_name == last_species_name):
+		denticle_file_start.write(species_name + '\n')
+	for i in range(len(denticle_start)):
+		denticle_file_start.write(str(round(denticle_start[i]*100/float(dim_rot[1]),2)) + '\t')	
+		
+	denticle_file_start.write('\n')
+
+# Creates a file consisting only the posterior limit of each denticle belt, as a fraction of larval length.	This "end" file does not contain the image filenames but matches the corresponding "start" file (see above) line for line.
+
+	if not(species_name == last_species_name):
+		denticle_file_end.write(species_name + '\n')	
+	for i in range(len(denticle_end)):
+		denticle_file_end.write(str(round(denticle_end[i]*100/float(dim_rot[1]),2)) + '\t')	
+	denticle_file_end.write('\n')
+	
+	last_species_name = species_name
+	
+	file_number += 1
+	
+denticle_file_start.close()
+denticle_file_end.close()	
+denticle_file_percentages.close()
+denticle_file.close()
+image_log.close()
+
+	
+
+	
+	
+	
